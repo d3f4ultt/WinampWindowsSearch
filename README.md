@@ -13,12 +13,7 @@ We are building the **best Windows search program** ever made.
 
 ## 🚀 Installation
 
-### Option 1: Download the Executable
-1.  Go to the **Releases** section.
-2.  Download `WinampWindowsSearch.exe`.
-3.  Run it. No installation required.
-
-### Option 2: Build from Source
+### Option 1: Build from Source
 If you want to hack on the code or build it yourself:
 
 1.  **Prerequisites**:
