@@ -1,3 +1,5 @@
+![Program Screenshot](program.png)
+
 # Winamp Windows Search ⚡🦙
 
 **The Ultimate Retro Search Tool for Windows**
