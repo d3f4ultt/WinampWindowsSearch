@@ -1,4 +1,4 @@
-![Program Screenshot](program.png)
+![Program Screenshot](screenshot.png)
 
 # Winamp Windows Search ⚡🦙
 
