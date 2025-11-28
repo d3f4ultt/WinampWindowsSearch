@@ -25,7 +25,5 @@
 Thumbs.db
 .DS_Store
 
-# Note: We are NOT ignoring the 'dist' folder here because you specifically asked to upload the .exe.
-# Standard practice is to ignore 'dist' and use GitHub Releases, but for your request, we'll allow it.
-# If you want to follow strict best practices, uncomment the line below:
-# dist/
+# Build Output (Exe is too large for Git, use Releases instead)
+dist/
