@@ -18,11 +18,20 @@ namespace VideoIndexer.Services
         public long OtherUsedSpace => TotalDriveSpace - FreeDriveSpace - TotalVideoSize;
     }
 
-    public class VideoSearchService
+    public class SearchConfig
+    {
+        public bool IncludeVideos { get; set; }
+        public bool IncludeImages { get; set; }
+        public bool IncludeOther { get; set; }
+    }
+
+    public class FileSearchService
     {
         private readonly DatabaseManager _dbManager = new DatabaseManager();
-        private readonly string[] VideoExtensions = { ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm" };
         
+        private readonly string[] VideoExtensions = { ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm" };
+        private readonly string[] ImageExtensions = { ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff" };
+
         public event Action<string, long>? OnLogMessage;
 
         private void Log(string message, long fileSize = 0)
@@ -30,17 +39,17 @@ namespace VideoIndexer.Services
             OnLogMessage?.Invoke($"[{DateTime.Now:HH:mm:ss}] {message}", fileSize);
         }
 
-        public async Task StartScanAndReport(string[] searchPaths)
+        public async Task StartScanAndReport(SearchConfig config)
         {
             // 0. Load existing index for incremental scanning
-            var existingVideos = GetAllVideos().ToDictionary(v => v.FilePath, v => v);
+            var existingFiles = GetAllFiles().ToDictionary(v => v.FilePath, v => v);
             
-            var foundVideos = await Task.Run(() => IndexVideos(searchPaths, existingVideos));
+            var foundFiles = await Task.Run(() => IndexFiles(config, existingFiles));
             
             // 1. Clear old data and save new results
             Log("Updating database...");
-            _dbManager.ClearAllVideos();
-            _dbManager.InsertVideos(foundVideos);
+            _dbManager.ClearAllFiles();
+            _dbManager.InsertFiles(foundFiles);
             
             // 2. Identify and mark duplicates
             Log("Checking for duplicates...");
@@ -48,9 +57,10 @@ namespace VideoIndexer.Services
             Log("Scan complete.");
         }
 
-        private List<VideoFile> IndexVideos(string[] searchPaths, Dictionary<string, VideoFile> existingIndex)
+        private List<IndexedFile> IndexFiles(SearchConfig config, Dictionary<string, IndexedFile> existingIndex)
         {
-            var foundVideos = new List<VideoFile>();
+            var foundFiles = new List<IndexedFile>();
+            var searchPaths = GetSearchPaths(config);
 
             foreach (var path in searchPaths)
             {
@@ -62,39 +72,52 @@ namespace VideoIndexer.Services
 
                 Log($"Scanning directory: {path}");
 
-                foreach (var extension in VideoExtensions)
+                try
                 {
-                    try
+                    // Use EnumerateFiles with *.* and filter manually for better control
+                    foreach (var file in Directory.EnumerateFiles(path, "*.*", SearchOption.AllDirectories))
                     {
-                        foreach (var file in Directory.EnumerateFiles(path, $"*{extension}", SearchOption.AllDirectories))
-                        {
-                            var fileInfo = new FileInfo(file);
-                            var lastWriteTime = fileInfo.LastWriteTime;
-                            
-                            // Incremental Check
-                            if (existingIndex.TryGetValue(file, out var existing) && 
-                                existing.FileSize == fileInfo.Length && 
-                                existing.LastWriteTime == lastWriteTime)
-                            {
-                                // Cache Hit: Reuse expensive data
-                                foundVideos.Add(new VideoFile
-                                {
-                                    FilePath = file,
-                                    FileSize = fileInfo.Length,
-                                    FileHash = existing.FileHash, // Reuse Hash
-                                    Duration = existing.Duration, // Reuse Duration
-                                    LastWriteTime = lastWriteTime,
-                                    LastScanned = DateTime.Now
-                                });
-                                continue; // Skip expensive processing
-                            }
+                        string ext = Path.GetExtension(file).ToLowerInvariant();
+                        FileType type;
 
-                            // Cache Miss: Process File
-                            // Calculate the file hash for duplicate detection
-                            string fileHash = CalculateSha256Hash(file);
-                            
-                            // Extract Duration
-                            TimeSpan duration = TimeSpan.Zero;
+                        if (config.IncludeVideos && VideoExtensions.Contains(ext)) type = FileType.Video;
+                        else if (config.IncludeImages && ImageExtensions.Contains(ext)) type = FileType.Image;
+                        else if (config.IncludeOther) type = FileType.Other;
+                        else continue; // Skip if not matching any selected category
+
+                        // Skip system files/folders if "Other" is selected to avoid clutter
+                        if (type == FileType.Other && (file.Contains("\\Windows\\") || file.Contains("\\Program Files")))
+                            continue;
+
+                        var fileInfo = new FileInfo(file);
+                        var lastWriteTime = fileInfo.LastWriteTime;
+                        
+                        // Incremental Check
+                        if (existingIndex.TryGetValue(file, out var existing) && 
+                            existing.FileSize == fileInfo.Length && 
+                            existing.LastWriteTime == lastWriteTime)
+                        {
+                            // Cache Hit: Reuse expensive data
+                            foundFiles.Add(new IndexedFile
+                            {
+                                FilePath = file,
+                                FileSize = fileInfo.Length,
+                                FileHash = existing.FileHash, // Reuse Hash
+                                Duration = existing.Duration, // Reuse Duration
+                                LastWriteTime = lastWriteTime,
+                                LastScanned = DateTime.Now,
+                                Type = type
+                            });
+                            continue; 
+                        }
+
+                        // Cache Miss: Process File
+                        string fileHash = CalculateSha256Hash(file);
+                        
+                        // Extract Duration (Only for Videos)
+                        TimeSpan duration = TimeSpan.Zero;
+                        if (type == FileType.Video)
+                        {
                             try
                             {
                                 using (var tfile = TagLib.File.Create(file))
@@ -103,26 +126,49 @@ namespace VideoIndexer.Services
                                 }
                             }
                             catch { /* Ignore metadata errors */ }
-
-                            Log($"Found: {file} ({duration:hh\\:mm\\:ss})", fileInfo.Length);
-
-                            foundVideos.Add(new VideoFile
-                            {
-                                FilePath = file,
-                                FileSize = fileInfo.Length,
-                                FileHash = fileHash,
-                                Duration = duration,
-                                LastWriteTime = lastWriteTime,
-                                LastScanned = DateTime.Now
-                            });
                         }
+
+                        Log($"Found: {file} ({type})", fileInfo.Length);
+
+                        foundFiles.Add(new IndexedFile
+                        {
+                            FilePath = file,
+                            FileSize = fileInfo.Length,
+                            FileHash = fileHash,
+                            Duration = duration,
+                            LastWriteTime = lastWriteTime,
+                            LastScanned = DateTime.Now,
+                            Type = type
+                        });
                     }
-                    catch (UnauthorizedAccessException) { /* Handle permission errors quietly */ }
-                    catch (DirectoryNotFoundException) { /* Handle missing paths quietly */ }
-                    catch (Exception) { /* Handle other errors quietly */ }
                 }
+                catch (UnauthorizedAccessException) { /* Handle permission errors quietly */ }
+                catch (DirectoryNotFoundException) { /* Handle missing paths quietly */ }
+                catch (Exception) { /* Handle other errors quietly */ }
             }
-            return foundVideos;
+            return foundFiles;
+        }
+
+        private List<string> GetSearchPaths(SearchConfig config)
+        {
+            var paths = new HashSet<string>();
+
+            if (config.IncludeVideos)
+            {
+                paths.Add(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos));
+            }
+            if (config.IncludeImages)
+            {
+                paths.Add(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures));
+            }
+            if (config.IncludeOther || config.IncludeVideos || config.IncludeImages)
+            {
+                paths.Add(Environment.GetFolderPath(Environment.SpecialFolder.Desktop));
+                paths.Add(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments));
+                paths.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads"));
+            }
+
+            return paths.ToList();
         }
         
         private string CalculateSha256Hash(string filePath)
@@ -151,15 +197,15 @@ namespace VideoIndexer.Services
                 connection.Open();
                 var cmd = connection.CreateCommand();
                 cmd.CommandText =
-                    @"UPDATE Videos SET IsDuplicate = 1
+                    @"UPDATE IndexedFiles SET IsDuplicate = 1
                       WHERE FilePath NOT IN (
                           SELECT MIN(FilePath)
-                          FROM Videos
+                          FROM IndexedFiles
                           GROUP BY FileHash
                           HAVING COUNT(FileHash) > 1
                       ) AND FileHash IN (
                           SELECT FileHash
-                          FROM Videos
+                          FROM IndexedFiles
                           GROUP BY FileHash
                           HAVING COUNT(FileHash) > 1
                       );";
@@ -167,20 +213,20 @@ namespace VideoIndexer.Services
             }
         }
 
-        public List<VideoFile> GetAllVideos()
+        public List<IndexedFile> GetAllFiles()
         {
-            var videos = new List<VideoFile>();
+            var files = new List<IndexedFile>();
             using (var connection = new SqliteConnection(_dbManager.ConnectionString))
             {
                 connection.Open();
                 var cmd = connection.CreateCommand();
-                cmd.CommandText = "SELECT ID, FilePath, FileSize, FileHash, DurationTicks, LastScanned, IsDuplicate, LastWriteTime FROM Videos";
+                cmd.CommandText = "SELECT ID, FilePath, FileSize, FileHash, DurationTicks, LastScanned, IsDuplicate, LastWriteTime, FileType FROM IndexedFiles";
                 
                 using (var reader = cmd.ExecuteReader())
                 {
                     while (reader.Read())
                     {
-                        videos.Add(new VideoFile
+                        files.Add(new IndexedFile
                         {
                             ID = reader.GetInt32(0),
                             FilePath = reader.GetString(1),
@@ -189,12 +235,13 @@ namespace VideoIndexer.Services
                             Duration = TimeSpan.FromTicks(reader.GetInt64(4)),
                             LastScanned = DateTime.Parse(reader.GetString(5)),
                             IsDuplicate = reader.GetBoolean(6),
-                            LastWriteTime = reader.IsDBNull(7) ? DateTime.MinValue : DateTime.Parse(reader.GetString(7))
+                            LastWriteTime = reader.IsDBNull(7) ? DateTime.MinValue : DateTime.Parse(reader.GetString(7)),
+                            Type = (FileType)reader.GetInt32(8)
                         });
                     }
                 }
             }
-            return videos;
+            return files;
         }
 
         public (long TotalSize, long DuplicateSize, int TotalCount) GetTotalStorageReport()
@@ -204,7 +251,7 @@ namespace VideoIndexer.Services
                 connection.Open();
                 
                 var totalCmd = connection.CreateCommand();
-                totalCmd.CommandText = "SELECT SUM(FileSize), COUNT(ID) FROM Videos;";
+                totalCmd.CommandText = "SELECT SUM(FileSize), COUNT(ID) FROM IndexedFiles;";
                 
                 long totalSize = 0;
                 int totalCount = 0;
@@ -219,7 +266,7 @@ namespace VideoIndexer.Services
                 }
                 
                 var duplicateCmd = connection.CreateCommand();
-                duplicateCmd.CommandText = "SELECT SUM(FileSize) FROM Videos WHERE IsDuplicate = 1;";
+                duplicateCmd.CommandText = "SELECT SUM(FileSize) FROM IndexedFiles WHERE IsDuplicate = 1;";
                 var result = duplicateCmd.ExecuteScalar();
                 long duplicateSize = (result == DBNull.Value || result == null) ? 0 : Convert.ToInt64(result);
                 
@@ -237,8 +284,8 @@ namespace VideoIndexer.Services
             metrics.DuplicateVideoSize = report.DuplicateSize;
 
             // 2. Calculate Drive Metrics (approximate based on scanned paths)
-            var allVideos = GetAllVideos();
-            var uniqueDrives = allVideos.Select(v => Path.GetPathRoot(v.FilePath))
+            var allFiles = GetAllFiles();
+            var uniqueDrives = allFiles.Select(v => Path.GetPathRoot(v.FilePath))
                                         .Where(r => r != null)
                                         .Distinct()
                                         .ToList();
@@ -275,7 +322,7 @@ namespace VideoIndexer.Services
                 var report = new List<LocationReportItem>();
 
                 var cmd = connection.CreateCommand();
-                cmd.CommandText = "SELECT FilePath, FileSize FROM Videos;";
+                cmd.CommandText = "SELECT FilePath, FileSize FROM IndexedFiles;";
                 
                 using (var reader = cmd.ExecuteReader())
                 {
@@ -315,6 +362,8 @@ namespace VideoIndexer.Services
                     return "Desktop Folder";
                 if (dir.StartsWith(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), StringComparison.OrdinalIgnoreCase))
                     return "Documents Folder";
+                if (dir.StartsWith(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), StringComparison.OrdinalIgnoreCase))
+                    return "Pictures Folder";
                 if (dir.StartsWith(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + "\\Downloads", StringComparison.OrdinalIgnoreCase))
                     return "Downloads Folder";
                 

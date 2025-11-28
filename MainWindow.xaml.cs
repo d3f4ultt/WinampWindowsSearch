@@ -10,19 +10,10 @@ namespace search
 {
     public partial class MainWindow : Window
     {
-        private readonly VideoSearchService _searchService = new VideoSearchService();
+        private readonly FileSearchService _searchService = new FileSearchService();
         private System.Windows.Threading.DispatcherTimer _vizTimer;
         private Random _rng = new Random();
         
-        // Define the common search paths
-        private readonly string[] _defaultPaths = new[]
-        {
-            Environment.GetFolderPath(Environment.SpecialFolder.MyVideos),
-            Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
-            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + "\\Downloads"
-        };
-
         public MainWindow()
         {
             InitializeComponent();
@@ -44,7 +35,7 @@ namespace search
                 {
                     var assembly = System.Reflection.Assembly.GetExecutingAssembly();
                     // Resource name is usually Namespace.Filename
-                    using (var stream = assembly.GetManifestResourceStream("search.swordfish.mp3"))
+                    using (var stream = assembly.GetManifestResourceStream("WinampWindowsSearch.swordfish.mp3"))
                     {
                         if (stream != null)
                         {
@@ -65,6 +56,9 @@ namespace search
             }
             
             InitializeVisualization();
+            
+            // Load existing data on startup
+            UpdateUIWithResults();
         }
 
         private void InitializeVisualization()
@@ -138,10 +132,18 @@ namespace search
                 // Show Winamp, Hide Reports
                 WinampContainer.Visibility = Visibility.Visible;
                 ReportContainer.Visibility = Visibility.Collapsed;
+                
+                // Build Config
+                var config = new SearchConfig
+                {
+                    IncludeVideos = CheckVideos.IsChecked == true,
+                    IncludeImages = CheckImages.IsChecked == true,
+                    IncludeOther = CheckOther.IsChecked == true
+                };
 
                 // 2. Core Logic Execution
                 PlayMusic(); // Auto-start music
-                await _searchService.StartScanAndReport(_defaultPaths);
+                await _searchService.StartScanAndReport(config);
 
                 // 3. UI Update (Retrieve and display results from the DB)
                 UpdateUIWithResults();
@@ -169,13 +171,13 @@ namespace search
         private void UpdateUIWithResults()
         {
             // Populate DataGrids
-            var allVideos = _searchService.GetAllVideos();
-            VideoDataGrid.ItemsSource = allVideos;
-            DuplicateDataGrid.ItemsSource = allVideos.Where(v => v.IsDuplicate).ToList();
+            var allFiles = _searchService.GetAllFiles();
+            VideoDataGrid.ItemsSource = allFiles;
+            DuplicateDataGrid.ItemsSource = allFiles.Where(v => v.IsDuplicate).ToList();
             
             // Populate Reports
             var totalReport = _searchService.GetTotalStorageReport();
-            ReportSummaryTextBlock.Text = $"Total Videos Indexed: {totalReport.TotalCount}. " +
+            ReportSummaryTextBlock.Text = $"Total Files Indexed: {totalReport.TotalCount}. " +
                                            $"Total Size: {(totalReport.TotalSize / 1073741824.0).ToString("N2")} GB. " +
                                            $"Savings potential: {(totalReport.DuplicateSize / 1073741824.0).ToString("N2")} GB (from duplicates).";
 
