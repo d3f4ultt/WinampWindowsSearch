@@ -26,7 +26,7 @@ If you want to hack on the code or build it yourself:
 
 2.  **Clone the Repository**:
     ```bash
-    git clone https://github.com/yourusername/WinampWindowsSearch.git
+    git clone https://github.com/d3f4ultt/WinampWindowsSearch.git
     cd WinampWindowsSearch
     ```
 
